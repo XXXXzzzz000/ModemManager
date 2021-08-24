@@ -31,10 +31,19 @@ typedef enum {
 # define MM_MODULE_NAME (const gchar *)NULL
 #endif
 
-#define mm_obj_err(obj, ...)  _mm_log (obj, MM_MODULE_NAME, G_STRLOC, G_STRFUNC, MM_LOG_LEVEL_ERR,   ## __VA_ARGS__ )
-#define mm_obj_warn(obj, ...) _mm_log (obj, MM_MODULE_NAME, G_STRLOC, G_STRFUNC, MM_LOG_LEVEL_WARN,  ## __VA_ARGS__ )
-#define mm_obj_info(obj, ...) _mm_log (obj, MM_MODULE_NAME, G_STRLOC, G_STRFUNC, MM_LOG_LEVEL_INFO,  ## __VA_ARGS__ )
-#define mm_obj_dbg(obj, ...)  _mm_log (obj, MM_MODULE_NAME, G_STRLOC, G_STRFUNC, MM_LOG_LEVEL_DEBUG, ## __VA_ARGS__ )
+// #define mm_obj_err(obj, ...)  _mm_log (obj, MM_MODULE_NAME, G_STRLOC, G_STRFUNC, MM_LOG_LEVEL_ERR,   ## __VA_ARGS__ )
+// #define mm_obj_warn(obj, ...) _mm_log (obj, MM_MODULE_NAME, G_STRLOC, G_STRFUNC, MM_LOG_LEVEL_WARN,  ## __VA_ARGS__ )
+// #define mm_obj_info(obj, ...) _mm_log (obj, MM_MODULE_NAME, G_STRLOC, G_STRFUNC, MM_LOG_LEVEL_INFO,  ## __VA_ARGS__ )
+// #define mm_obj_dbg(obj, ...)  _mm_log (obj, MM_MODULE_NAME, G_STRLOC, G_STRFUNC, MM_LOG_LEVEL_DEBUG, ## __VA_ARGS__ )
+
+#include <stdio.h>
+#ifndef LOG_TAG
+#define LOG_TAG ""
+#endif
+#define mm_obj_err(obj, ...)  do{(void)obj;printf("[%s]  ",LOG_TAG);printf( __VA_ARGS__ );printf("\n");}while(0)
+#define mm_obj_warn(obj, ...) do{(void)obj;printf("[%s]  ",LOG_TAG);printf( __VA_ARGS__ );printf("\n");}while(0)
+#define mm_obj_info(obj, ...) do{(void)obj;printf("[%s]  ",LOG_TAG);printf( __VA_ARGS__ );printf("\n");}while(0)
+#define mm_obj_dbg(obj, ...)  do{(void)obj;printf("[%s]  ",LOG_TAG);printf( __VA_ARGS__ );printf("\n");}while(0)
 
 /* only allow using non-object logging API if explicitly requested
  * (e.g. in the main daemon source) */

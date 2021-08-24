@@ -13,7 +13,7 @@
  * Copyright (C) 2011 - 2012 Red Hat, Inc.
  * Copyright (C) 2012 Google, Inc.
  */
-
+#define LOG_TAG "3GPP"
 #include <ctype.h>
 #include <string.h>
 
@@ -38,6 +38,7 @@
 #define SMS_NUMBER_TYPE_MASK          0x70
 #define SMS_NUMBER_TYPE_UNKNOWN       0x00
 #define SMS_NUMBER_TYPE_INTL          0x10
+#define SMS_NUMBER_TYPE_NATION        0x20
 #define SMS_NUMBER_TYPE_ALPHA         0x50
 
 #define SMS_NUMBER_PLAN_MASK          0x0f
@@ -58,6 +59,15 @@
 
 #define SMS_TIMESTAMP_LEN 7
 #define SMS_MIN_PDU_LEN (7 + SMS_TIMESTAMP_LEN)
+
+#define SMS_SMSC_TYPE_NATIONAL 0x81
+#define SMS_SMSC_TYPE_INTERNATIONAL 0x91
+#define SMS_SMSC_MAX_SIZE 12
+#define SMS_SMSC_MIN_SIZE 1
+#define SMS_SMSC_LEN_SIZE 1
+#define SMS_SMSC_TYPE_SIZE 1
+#define SMS_SMSC_ADDR_MAX_SIZE (SMS_SMSC_MAX_SIZE - SMS_SMSC_LEN_SIZE - SMS_SMSC_TYPE_SIZE)
+#define SMS_SMSC_ADDR_MIN_SIZE (SMS_SMSC_MIN_SIZE - SMS_SMSC_LEN_SIZE)
 
 static char sms_bcd_chars[] = "0123456789*#abc\0\0";
 
@@ -270,7 +280,7 @@ sms_decode_text (const guint8   *text,
         gchar                 *utf8;
 
         bytearray = g_byte_array_append (g_byte_array_sized_new (len), (const guint8 *)text, len);
-        utf8 = mm_modem_charset_bytearray_to_utf8 (bytearray, MM_MODEM_CHARSET_UTF16, FALSE, error);
+        utf8 = mm_modem_charset_bytearray_to_utf8 (bytearray, MM_MODEM_CHARSET_UCS2, FALSE, error);
         if (utf8)
             mm_obj_dbg (log_object, "converted SMS part text from UTF-16BE to UTF-8: %s", utf8);
         return utf8;
@@ -358,6 +368,74 @@ mm_sms_part_3gpp_new_from_pdu (guint         index,
     return mm_sms_part_3gpp_new_from_binary_pdu (index, pdu, pdu_len, log_object, error);
 }
 
+static gboolean has_smsc(const guint8 *pdu,
+                         gsize pdu_len)
+{
+    gpointer      log_object=NULL;
+    guint8 smsc_len = pdu[0];
+    guint8 addrtype, addrplan, addrstart;
+    // const guint8 *smsc_addr=NULL;
+    guint8 smsc_addr_len;
+    mm_obj_dbg (log_object, "has_smsc check\n");
+    if (pdu_len <= smsc_len)
+    {
+        mm_obj_dbg (log_object, "SMSC len error.smsc len: 0x%x\n", smsc_len);
+        return FALSE;
+    }
+    if (smsc_len == 0x00)
+    {
+        return TRUE;
+    }
+    mm_obj_dbg (log_object, "smsc len: 0x%x\n", smsc_len);
+
+    /* 3GPP TS 03.40 V7.5.0   9.1.2.5 */
+    addrstart = pdu[1] & 0x80;
+    addrtype = pdu[1] & SMS_NUMBER_TYPE_MASK;
+    addrplan = pdu[1] & SMS_NUMBER_PLAN_MASK;
+    /* check addr type */
+    if (addrstart != 0x80)
+    {
+        mm_obj_dbg (log_object, "SMSC addr head error\n");
+        return FALSE;
+    }
+
+    /**
+     * @brief  SMS_NUMBER_TYPE_UNKNOWN  Add for A1
+     * 
+     */
+    if (addrtype != SMS_NUMBER_TYPE_INTL &&
+        addrtype != SMS_NUMBER_TYPE_NATION &&
+        addrtype != SMS_NUMBER_TYPE_ALPHA)
+    {
+        mm_obj_dbg (log_object, "SMSC type error.addr type: 0x%x, addr plan %d\n", addrtype, addrplan);
+        return FALSE;
+    }
+    mm_obj_dbg (log_object, "smsc type: 0x%x\n", addrtype);
+
+    smsc_addr_len = smsc_len - SMS_SMSC_TYPE_SIZE - SMS_SMSC_LEN_SIZE;
+    /* check addr size */
+    if (smsc_addr_len > SMS_SMSC_ADDR_MAX_SIZE)
+    {
+        mm_obj_dbg (log_object, "SMSC size error. smsc_addr_len: %x\n", smsc_addr_len);
+        return FALSE;
+    }
+    mm_obj_dbg (log_object, "smsc addr len: %x\n", smsc_addr_len);
+
+    /* check smsc addr format */
+    // smsc_addr = &pdu[3];
+    // if (smsc_addr_len % 2 != 0)
+    // {
+    //     /* check the 0xF */
+    //     guint8 last_byte = smsc_addr[smsc_addr_len - 1];
+    //     if ((last_byte & 0xF0) != 0xF0)
+    //     {
+    //         mm_obj_dbg (log_object, "SMSC format error.");
+    //         return FALSE;
+    //     }
+    // }
+    return TRUE;
+}
+
 MMSmsPart *
 mm_sms_part_3gpp_new_from_binary_pdu (guint         index,
                                       const guint8  *pdu,
@@ -380,6 +458,7 @@ mm_sms_part_3gpp_new_from_binary_pdu (guint         index,
     guint tp_user_data_len_offset = 0;
     MMSmsEncoding user_data_encoding = MM_SMS_ENCODING_UNKNOWN;
     gchar *address;
+    gboolean is_have_smsc=FALSE;
 
     /* Create the new MMSmsPart */
     sms_part = mm_sms_part_new (index, MM_SMS_PDU_TYPE_UNKNOWN);
@@ -409,21 +488,39 @@ mm_sms_part_3gpp_new_from_binary_pdu (guint         index,
      * First byte represents the number of BYTES for the address value */
     PDU_SIZE_CHECK (1, "cannot read SMSC address length");
     smsc_addr_size_bytes = pdu[offset++];
-    if (smsc_addr_size_bytes > 0) {
-        PDU_SIZE_CHECK (offset + smsc_addr_size_bytes, "cannot read SMSC address");
-        /* SMSC may not be given in DELIVER PDUs */
-        address = sms_decode_address (&pdu[1], 2 * (smsc_addr_size_bytes - 1), error);
-        if (!address) {
-            g_prefix_error (error, "Couldn't read SMSC address: ");
-            mm_sms_part_free (sms_part);
-            return NULL;
+    printf("smsc len %d\n", smsc_addr_size_bytes);
+    is_have_smsc = has_smsc(&pdu[offset - 1], pdu_len);
+    printf("has_smsc, %d\n", is_have_smsc);
+    if ((smsc_addr_size_bytes > 0))
+    {
+        if (is_have_smsc)
+        {
+            PDU_SIZE_CHECK(offset + smsc_addr_size_bytes, "cannot read SMSC address");
+            /* SMSC may not be given in DELIVER PDUs */
+            address = sms_decode_address(&pdu[1], 2 * (smsc_addr_size_bytes - 1), error);
+            if (!address)
+            {
+                g_prefix_error(error, "Couldn't read SMSC address: ");
+                mm_sms_part_free(sms_part);
+                return NULL;
+            }
+            else
+            {
+                mm_sms_part_take_smsc(sms_part, g_steal_pointer(&address));
+                mm_obj_dbg(log_object, "  SMSC address parsed: '%s'", mm_sms_part_get_smsc(sms_part));
+                offset += smsc_addr_size_bytes;
+            }
         }
-        mm_sms_part_take_smsc (sms_part, g_steal_pointer (&address));
-        mm_obj_dbg (log_object, "  SMSC address parsed: '%s'", mm_sms_part_get_smsc (sms_part));
-        offset += smsc_addr_size_bytes;
-    } else
-        mm_obj_dbg (log_object, "  no SMSC address given");
-
+        else
+        {
+            offset -= 1;
+            printf("SMSC address len >0: but smsc check error, recover it\n");
+        }
+    }
+    else
+    {
+        mm_obj_dbg(log_object, "  no SMSC address given");
+    }
 
     /* ---------------------------------------------------------------------- */
     /* TP-MTI (1 byte) */
@@ -1025,7 +1122,7 @@ mm_sms_part_3gpp_get_submit_pdu (MMSmsPart *part,
         g_autoptr(GError)     inner_error = NULL;
 
         /* Always assume UTF-16 instead of UCS-2! */
-        array = mm_modem_charset_bytearray_from_utf8 (mm_sms_part_get_text (part), MM_MODEM_CHARSET_UTF16, FALSE, &inner_error);
+        array = mm_modem_charset_bytearray_from_utf8 (mm_sms_part_get_text (part), MM_MODEM_CHARSET_UCS2, FALSE, &inner_error);
         if (!array) {
             g_set_error (error,
                          MM_MESSAGE_ERROR,
